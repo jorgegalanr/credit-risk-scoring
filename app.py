@@ -1,73 +1,87 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import numpy as np
 
-# Configuración básica de la página
-st.set_page_config(page_title="Credit Scoring App", page_icon="🏦", layout="centered")
+st.set_page_config(page_title="Credit Scoring App v2", layout="centered")
 
-# Cargar el modelo y las columnas (con caché para agilizarlo)
-@st.cache_resource
-def cargar_modelo():
-    modelo = joblib.load('modelo_riesgo_rf.pkl')
-    columnas = joblib.load('columnas_modelo.pkl')
-    return modelo, columnas
+# Cargar modelo, scaler, columnas y umbral
+modelo = joblib.load('modelo_riesgo_rf_v2.pkl')
+scaler = joblib.load('scaler_v2.pkl')
+columnas_modelo = joblib.load('columnas_modelo_v2.pkl')
+umbral = joblib.load('umbral_v2.pkl')
 
-modelo_rf, columnas_modelo = cargar_modelo()
+st.title("Simulador de Riesgo Crediticio")
+st.markdown("Modelo entrenado con 6 variables: duración, importe, historial crediticio, estado de cuenta, ahorros y antigüedad laboral.")
 
-# Interfaz de Usuario (UI)
-st.title("🏦Simulador de Riesgo Crediticio")
-st.markdown("Introduce los datos del cliente para evaluar la probabilidad de impago mediante Inteligencia Artificial.")
-
-# Creación dos columnas visuales
 col1, col2 = st.columns(2)
 
+opciones_savings = {
+    'Sin ahorros previos': 'no known savings',
+    'Inferior a 100€': '<100',
+    'Entre 100 y 500€': '100<=X<500',
+    'Entre 500 y 1000€': '500<=X<1000',
+    'Mayor o igual a 1000€': '>=1000'    
+}
+
+opciones_checkings = {
+    'Entre 0 y 200':'0<=X<200',
+    'Inferior a 0': '<0',
+    'Superior o igual a 200': '>=200',
+    'Sin cuenta corriente': 'no checking'
+}
+
+opciones_history = {
+    'Historial crítico o con otros créditos activos':'critical/other existing credit',
+    'Créditos anteriores pagados correctamente':'existing paid',
+    'Retraso en pagos anteriores':'delayed previously',
+    'Sin créditos previos o todos liquidados':'no credits/all paid',
+    'Todos los créditos anteriores':'all paid'
+}
+
+opciones_employments = {
+    'Mayor o igual a 7':'>=7',
+    'Entre 1 y 4':'1<=X<4',
+    'Entre 4 y 7': '4<=X<7',
+    'Desempleado': 'unemployed',
+    'Menor a 1':'<1'
+}
 with col1:
-    importe = st.number_input("Importe Solicitado (€)", min_value=100, max_value=50000, value=5000)
-    edad = st.number_input("Edad del Solicitante", min_value=18, max_value=100, value=35)
-    
+    duration = st.number_input("Duración del préstamo (meses)", min_value=6, max_value=48, value=24)
+    credit_amount = st.number_input("Importe solicitado (€)", min_value=100, max_value=10000, value=3000)
+
 with col2:
-    duracion = st.number_input("Duración del préstamo (Meses)",min_value=6, max_value=72, value=24)
-    ratio_endeudamiento = st.selectbox("Ratio de Endeudamiento (1=Bajo, 4=Alto)", [1, 2, 3, 4], index=1)
+    etiqueta_checking = st.selectbox("Estado de la cuenta corriente", list(opciones_checkings.keys()))
+    checking_status = opciones_checkings[etiqueta_checking]
+    
+    etiqueta_savings = st.selectbox("Nivel de ahorros", list(opciones_savings.keys()))
+    savings_status = opciones_savings[etiqueta_savings]
 
+etiqueta_history = st.selectbox("Historial crediticio", list(opciones_history.keys()))
+credit_history = opciones_history[etiqueta_history]
 
-st.markdown("---")
-st.subheader("Política de Riesgos")
+etiqueta_employment = st.selectbox("Antigüedad en el empleo actual", list(opciones_employments.keys()))
+employment = opciones_employments[etiqueta_employment]
 
-# Añadimos un slider para que el usuario elija qué tan estricto quiere ser
-umbral_tolerancia = st.slider("Tolerancia máxima al riesgo de impago", min_value=0.10,max_value=0.90, value=0.30, step=0.05, help="Por encima de este porcentaje, el préstamo se deniega automáticamente.") 
-
-# Configuración botón y lógica matemática
 if st.button("Evaluar Riesgo", use_container_width=True):
-    # Crearemos un diccionario con ceros para TODAS las columnas
-    # Así la IA recibe el tamaño exacto de datos que espera.
-    datos_entrada = {col: 0 for col in columnas_modelo} 
+    datos_cliente = {
+        'duration': duration,
+        'credit_amount': credit_amount,
+        'checking_status': checking_status,
+        'credit_history': credit_history,
+        'savings_status': savings_status,
+        'employment': employment
+    }
     
-    # Actualizamos solo las variables que el usuario ha tocado en la web
-    datos_entrada['Importe_Solicitado'] = importe
-    datos_entrada['Edad'] = edad
-    datos_entrada['Duracion_Meses']= duracion
-    datos_entrada['Ratio_Endeudamiento'] = ratio_endeudamiento
-     
-    # Convertimos a formato tabla (Pandas)
-    df_entrada = pd.DataFrame([datos_entrada])
+    df_cliente = pd.DataFrame([datos_cliente]) 
+    df_encoded = pd.get_dummies(df_cliente)  
+    df_final = df_encoded.reindex(columns=columnas_modelo, fill_value=0)
     
-    # Hacemos la predicción
-    probabilidad_moroso = modelo_rf.predict_proba(df_entrada)[0][1] # Extraemos el % de ser Moroso (clase 1)
+    cols_numericas = ['duration', 'credit_amount']
+    df_final[cols_numericas] = scaler.transform(df_final[cols_numericas])
+    probabilidad = modelo.predict_proba(df_final)[0][0]
     
-    # Aplicamos nuestra política estricta de negocio (Umbral 30%)
-    st.markdown("---")
-    if probabilidad_moroso >= umbral_tolerancia:
-        st.error(f" PRÉSTAMO DENEGADO. Alto Riesgo Detectado.")
-        st.warning(f"Probabilidad de impago: {probabilidad_moroso * 100:.1f}% (Supera el límite del 30%)")
-        
-        # --- EXPLICABILIDAD (EL POR QUÉ) ---
-        with st.expander(" Motivos de la decisión del modelo:"):
-            st.write("El algoritmo penaliza esta solicitud basándose en sus variables de mayor peso:")
-            st.write(f"** Importe ({importe}€): ** La magnitud de la exposición al riesgo es el factor principal.")
-            st.write(f"- **Edad ({edad} años):** Correlacionado estadísticamente con la madurez y estabilidad laboral histórica.")
-            st.write(f"- **Duración ({duracion} meses):** Plazos prolongados aumentan la probabilidad de imprevistos económicos.")
-            st.info("Sugerencia: Intente reducir el importe solicitado o acortar el plazo en meses para mejorar el *Credit Score*.")
+    if probabilidad >= umbral:
+        st.error(f"PRÉSTAMO DENEGADO. Probabilidad de impago: {probabilidad*100:.1f}%")
     else:
-        st.success(f"PRÉSTAMO APROBADO. Cliente Sólido.")
-        st.info(f"Probabilidad de impago: {probabilidad_moroso * 100:.1f}% (Dentro de los límites)")
+        st.success(f"PRÉSTAMO APROBADO. Probabilidad de impago: {probabilidad*100:.1f}%")   
+        
